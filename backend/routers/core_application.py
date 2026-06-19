@@ -1,52 +1,100 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
-from datetime import datetime
-from database.models import UploadedFile, DocumentChunk, User
+from database.models import UploadedFile, DocumentChunk, Message, Session
 from database.config import get_db
 from backend.services.auth import get_current_user
-from backend.services.core_application_service import CoreApplicationService
-from backend.services.query_pipeline_service import QueryPipelineService
-from backend.services.upload_service import UploadService
-from backend.services.ingestion_pipeline_service import create_document_chunks
-from backend.services.query_pipeline_service import retrieve_chunks, build_prompt, call_llm
-from backend.services.core_application_service import extract_text_from_excel, ingest_excel
+from backend.routers.ingestion_pipeline import parse_excel, chunk_text, embed_text
+from ai.embeddings import get_embedding
+from ai.rag import retrieve_context, answer_question
 
-router = APIRouter(prefix="/core_application", tags=["Core Application"])
+router = APIRouter(prefix="/api/ai", tags=["Core Application"])
 
-# Pydantic schemas
+# Pydantic Schemas
 class UploadedFileResponse(BaseModel):
     id: UUID
     session_id: UUID
     filename: str
     file_path: str
     file_size: int
-    uploaded_at: datetime
+    uploaded_at: str
+
+class DocumentChunkResponse(BaseModel):
+    id: UUID
+    file_id: UUID
+    content: str
+    embedding: List[float]
+    chunk_index: int
+    start_row: int
+    end_row: int
+    metadata: dict
+    created_at: str
 
 class QueryRequest(BaseModel):
     query: str
-    session_id: UUID
+    sessionId: UUID
     top_k: int = Field(default=5, ge=1)
 
 class QueryResponse(BaseModel):
     answer: str
     citations: List[dict]
 
-# Upload Excel file endpoint
-@router.post("/upload", response_model=UploadedFileResponse)
-async def upload_excel_file(
+# Endpoint: Upload Excel File
+@router.post("/ingest", response_model=UploadedFileResponse)
+async def ingest_documents(
     file: UploadFile = File(...),
     session_id: UUID = Form(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    if not file.filename.endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="Only .xlsx files are supported.")
+    if file.content_type != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .xlsx files are supported.")
     
-    upload_service = UploadService()
-    uploaded_file = await upload_service.upload_file(session_id=session_id, file=file, db=db)
+    # Save file to disk
+    file_path = f"./uploads/{file.filename}"
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+    
+    # Parse Excel file
+    try:
+        parsed_data = parse_excel(file_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse Excel file: {str(e)}")
+    
+    # Chunk data
+    chunks = chunk_text(parsed_data, chunk_size=1000, overlap=200)
+    
+    # Embed chunks
+    embeddings = embed_text(chunks)
+    
+    # Store chunks in database
+    for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        document_chunk = DocumentChunk(
+            file_id=None,  # Placeholder, should be linked to UploadedFile
+            content=chunk,
+            embedding=embedding,
+            chunk_index=idx,
+            start_row=0,  # Placeholder, should be calculated
+            end_row=0,  # Placeholder, should be calculated
+            metadata={},
+            created_at=None,  # Placeholder, should be set
+        )
+        db.add(document_chunk)
+    db.commit()
+    
+    # Create UploadedFile record
+    uploaded_file = UploadedFile(
+        session_id=session_id,
+        filename=file.filename,
+        file_path=file_path,
+        file_size=len(parsed_data),
+        uploaded_at=None,  # Placeholder, should be set
+    )
+    db.add(uploaded_file)
+    db.commit()
     
     return UploadedFileResponse(
         id=uploaded_file.id,
@@ -54,98 +102,38 @@ async def upload_excel_file(
         filename=uploaded_file.filename,
         file_path=uploaded_file.file_path,
         file_size=uploaded_file.file_size,
-        uploaded_at=uploaded_file.uploaded_at,
+        uploaded_at=uploaded_file.uploaded_at.isoformat(),
     )
 
-# Query data endpoint
+# Endpoint: Query AI
 @router.post("/query", response_model=QueryResponse)
-async def query_data(
+async def ai_query(
     query_request: QueryRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    # Retrieve relevant chunks based on the query
-    query_pipeline_service = QueryPipelineService()
-    query_embedding = query_pipeline_service.embed_query(query_request.query)
-    chunks = retrieve_chunks(query_embedding=query_embedding, top_k=query_request.top_k, db=db)
+    # Embed query
+    query_embedding = get_embedding([query_request.query])[0]
     
-    # Build the prompt and call the LLM
-    prompt = build_prompt(chunks=chunks, query=query_request.query)
-    llm_response = call_llm(messages=[{"role": "user", "content": prompt}], stream=False)
-    
-    return QueryResponse(answer=llm_response["answer"], citations=llm_response["citations"])
-
-# List uploaded files endpoint
-@router.get("/files", response_model=List[UploadedFileResponse])
-async def list_uploaded_files(
-    session_id: UUID = Query(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    core_service = CoreApplicationService()
-    uploaded_files = core_service.list_uploaded_files(session_id=session_id, db=db)
-    
-    return [
-        UploadedFileResponse(
-            id=file.id,
-            session_id=file.session_id,
-            filename=file.filename,
-            file_path=file.file_path,
-            file_size=file.file_size,
-            uploaded_at=file.uploaded_at,
-        )
-        for file in uploaded_files
-    ]
-
-# Get uploaded file by ID endpoint
-@router.get("/files/{file_id}", response_model=UploadedFileResponse)
-async def get_uploaded_file(
-    file_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    core_service = CoreApplicationService()
-    uploaded_file = core_service.get_uploaded_file_by_id(file_id=file_id, db=db)
-    
-    if not uploaded_file:
-        raise HTTPException(status_code=404, detail="File not found.")
-    
-    return UploadedFileResponse(
-        id=uploaded_file.id,
-        session_id=uploaded_file.session_id,
-        filename=uploaded_file.filename,
-        file_path=uploaded_file.file_path,
-        file_size=uploaded_file.file_size,
-        uploaded_at=uploaded_file.uploaded_at,
+    # Retrieve context
+    context_chunks = retrieve_context(
+        query=query_embedding,
+        top_k=query_request.top_k,
+        session_id=query_request.sessionId,
+        user_id=current_user["id"],
     )
-
-# Delete uploaded file endpoint
-@router.delete("/files/{file_id}")
-async def delete_uploaded_file(
-    file_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    core_service = CoreApplicationService()
-    core_service.delete_uploaded_file(file_id=file_id, db=db)
-    return {"detail": "File deleted successfully."}
-
-# Ingest Excel file endpoint
-@router.post("/ingest")
-async def ingest_excel_file(
-    file_id: UUID = Form(...),
-    session_id: UUID = Form(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    core_service = CoreApplicationService()
-    uploaded_file = core_service.get_uploaded_file_by_id(file_id=file_id, db=db)
     
-    if not uploaded_file:
-        raise HTTPException(status_code=404, detail="File not found.")
+    # Generate answer
+    try:
+        answer_data = answer_question(
+            query=query_request.query,
+            session_id=query_request.sessionId,
+            user_id=current_user["id"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
     
-    # Extract text and ingest document chunks
-    extracted_text = extract_text_from_excel(file_path=uploaded_file.file_path)
-    document_chunks = await create_document_chunks(file_id=file_id, session=db)
-    
-    return {"detail": "File ingested successfully.", "chunks_created": len(document_chunks)}
+    return QueryResponse(
+        answer=answer_data["answer"],
+        citations=answer_data["citations"],
+    )
