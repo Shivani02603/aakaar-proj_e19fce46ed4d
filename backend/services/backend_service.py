@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,11 +11,11 @@ from sqlalchemy.orm import joinedload
 class BackendService:
     async def create_user(self, user_data: dict, db: AsyncSession) -> User:
         try:
-            new_user = User(**user_data)
-            db.add(new_user)
+            user = User(**user_data)
+            db.add(user)
             await db.commit()
-            await db.refresh(new_user)
-            return new_user
+            await db.refresh(user)
+            return user
         except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
@@ -68,18 +68,18 @@ class BackendService:
 
     async def create_session(self, session_data: dict, db: AsyncSession) -> Session:
         try:
-            new_session = Session(**session_data)
-            db.add(new_session)
+            session = Session(**session_data)
+            db.add(session)
             await db.commit()
-            await db.refresh(new_session)
-            return new_session
+            await db.refresh(session)
+            return session
         except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(status_code=500, detail=f"Error creating session: {str(e)}")
 
     async def get_session_by_id(self, session_id: UUID, db: AsyncSession) -> Session:
         try:
-            result = await db.execute(select(Session).where(Session.id == session_id).options(joinedload(Session.user)))
+            result = await db.execute(select(Session).where(Session.id == session_id))
             session = result.scalar_one_or_none()
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -89,7 +89,7 @@ class BackendService:
 
     async def list_all_sessions(self, db: AsyncSession) -> List[Session]:
         try:
-            result = await db.execute(select(Session).options(joinedload(Session.user)))
+            result = await db.execute(select(Session))
             sessions = result.scalars().all()
             return sessions
         except SQLAlchemyError as e:
