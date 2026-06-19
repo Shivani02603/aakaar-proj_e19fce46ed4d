@@ -29,16 +29,20 @@ class VectorStore:
         self._connect()
         filter_conditions = " AND ".join([f"{key} = %s" for key in filters.keys()])
         filter_values = list(filters.values())
+
         query = f"""
             SELECT id, embedding, metadata, 1 - (embedding <=> %s) AS similarity
             FROM vectors
-            {"WHERE " + filter_conditions if filters else ""}
+            {"WHERE " + filter_conditions if filter_conditions else ""}
             ORDER BY embedding <=> %s
             LIMIT %s;
         """
+        params = [query_embedding, query_embedding, top_k] + filter_values
+
         with self.connection.cursor() as cursor:
-            cursor.execute(query, [query_embedding, query_embedding, top_k] + filter_values)
+            cursor.execute(query, params)
             results = cursor.fetchall()
+
         matches = [
             {"id": row[0], "embedding": row[1], "metadata": row[2], "similarity": row[3]}
             for row in results
