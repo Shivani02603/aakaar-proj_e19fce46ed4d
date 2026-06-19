@@ -5,66 +5,56 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import SQLAlchemyError
 from database.models import DocumentChunk, UploadedFile
-from backend.routers.core_application import chunk_text, embed_text
-from backend.models import DocumentChunk as DocumentChunkModel
-from datetime import datetime
-import pandas as pd
-import os
+from ai.embeddings import get_embedding
+from ai.ingest import chunk_text
+from env import CHUNK_SIZE, CHUNK_OVERLAP
 
 class IngestionPipelineService:
-    async def create_document_chunks(self, file_id: UUID, session: AsyncSession) -> List[DocumentChunk]:
+    async def create_document_chunks(
+        self, file_id: UUID, session_id: UUID, db: AsyncSession
+    ) -> List[DocumentChunk]:
         try:
-            # Fetch the uploaded file details
-            result = await session.execute(select(UploadedFile).where(UploadedFile.id == file_id))
+            # Fetch the uploaded file
+            result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
             uploaded_file = result.scalar_one_or_none()
             if not uploaded_file:
                 raise HTTPException(status_code=404, detail="Uploaded file not found")
 
-            # Parse the Excel file
+            # Parse the file content
             file_path = uploaded_file.file_path
-            if not os.path.exists(file_path):
-                raise HTTPException(status_code=404, detail="File path does not exist")
+            with open(file_path, "rb") as file:
+                file_content = file.read()
 
-            excel_data = pd.ExcelFile(file_path)
-            all_chunks = []
+            # Chunk the content
+            chunks = chunk_text(file_content.decode("utf-8"), CHUNK_SIZE, CHUNK_OVERLAP)
 
-            for sheet_name in excel_data.sheet_names:
-                sheet_data = excel_data.parse(sheet_name)
-                text_data = sheet_data.to_string(index=False, header=False)
+            # Embed the chunks
+            embeddings = get_embedding(chunks)
 
-                # Chunk the text data
-                chunks = chunk_text(text_data, chunk_size=1000, overlap=200)
+            # Store chunks in the database
+            document_chunks = []
+            for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                document_chunk = DocumentChunk(
+                    file_id=file_id,
+                    content=chunk,
+                    embedding=embedding,
+                    chunk_index=index,
+                    metadata={"session_id": str(session_id)},
+                )
+                db.add(document_chunk)
+                document_chunks.append(document_chunk)
 
-                # Embed the chunks
-                embeddings = embed_text(chunks)
-
-                # Store chunks in the database
-                for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                    document_chunk = DocumentChunkModel(
-                        id=UUID(),
-                        file_id=file_id,
-                        content=chunk,
-                        embedding=embedding,
-                        chunk_index=index,
-                        start_row=None,  # Optional: Define based on your chunking logic
-                        end_row=None,    # Optional: Define based on your chunking logic
-                        metadata={"sheet_name": sheet_name},
-                        created_at=datetime.utcnow()
-                    )
-                    session.add(document_chunk)
-                    all_chunks.append(document_chunk)
-
-            await session.commit()
-            return all_chunks
+            await db.commit()
+            return document_chunks
         except SQLAlchemyError as e:
-            await session.rollback()
+            await db.rollback()
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
-    async def get_document_chunk_by_id(self, chunk_id: UUID, session: AsyncSession) -> DocumentChunk:
+    async def get_document_chunk_by_id(self, chunk_id: UUID, db: AsyncSession) -> DocumentChunk:
         try:
-            result = await session.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
+            result = await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
             document_chunk = result.scalar_one_or_none()
             if not document_chunk:
                 raise HTTPException(status_code=404, detail="Document chunk not found")
@@ -72,40 +62,44 @@ class IngestionPipelineService:
         except SQLAlchemyError as e:
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    async def list_document_chunks(self, file_id: UUID, session: AsyncSession) -> List[DocumentChunk]:
+    async def list_document_chunks(self, file_id: UUID, db: AsyncSession) -> List[DocumentChunk]:
         try:
-            result = await session.execute(select(DocumentChunk).where(DocumentChunk.file_id == file_id))
+            result = await db.execute(select(DocumentChunk).where(DocumentChunk.file_id == file_id))
             document_chunks = result.scalars().all()
             return document_chunks
         except SQLAlchemyError as e:
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    async def update_document_chunk(self, chunk_id: UUID, updated_data: dict, session: AsyncSession) -> DocumentChunk:
+    async def update_document_chunk(
+        self, chunk_id: UUID, updated_chunk: DocumentChunk, db: AsyncSession
+    ) -> DocumentChunk:
         try:
-            result = await session.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
+            result = await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
             document_chunk = result.scalar_one_or_none()
             if not document_chunk:
                 raise HTTPException(status_code=404, detail="Document chunk not found")
 
-            for key, value in updated_data.items():
-                if hasattr(document_chunk, key):
-                    setattr(document_chunk, key, value)
+            # Update fields
+            document_chunk.content = updated_chunk.content
+            document_chunk.embedding = updated_chunk.embedding
+            document_chunk.metadata = updated_chunk.metadata
 
-            await session.commit()
+            db.add(document_chunk)
+            await db.commit()
             return document_chunk
         except SQLAlchemyError as e:
-            await session.rollback()
+            await db.rollback()
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    async def delete_document_chunk(self, chunk_id: UUID, session: AsyncSession) -> None:
+    async def delete_document_chunk(self, chunk_id: UUID, db: AsyncSession) -> None:
         try:
-            result = await session.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
+            result = await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
             document_chunk = result.scalar_one_or_none()
             if not document_chunk:
                 raise HTTPException(status_code=404, detail="Document chunk not found")
 
-            await session.delete(document_chunk)
-            await session.commit()
+            await db.delete(document_chunk)
+            await db.commit()
         except SQLAlchemyError as e:
-            await session.rollback()
+            await db.rollback()
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
