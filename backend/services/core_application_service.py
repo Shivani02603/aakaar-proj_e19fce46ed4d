@@ -6,116 +6,108 @@ from sqlalchemy.future import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 from database.models import UploadedFile, DocumentChunk
-from backend.routers.core_application import extract_text_from_excel, chunk_text, embed_text
 from ai.embeddings import get_embedding
+from ai.ingest import chunk_text, parse_excel
 from ai.vector_store import VectorStore
-from datetime import datetime
-import os
 
 
 class CoreApplicationService:
-    async def create_uploaded_file(
-        self, session_id: UUID, filename: str, file_path: str, file_size: int, db: AsyncSession
-    ) -> UploadedFile:
+    @staticmethod
+    async def create_uploaded_file(file_data: dict, db: AsyncSession) -> UploadedFile:
         try:
-            uploaded_file = UploadedFile(
-                id=UUID(),
-                session_id=session_id,
-                filename=filename,
-                file_path=file_path,
-                file_size=file_size,
-                uploaded_at=datetime.utcnow(),
-            )
-            db.add(uploaded_file)
+            new_file = UploadedFile(**file_data)
+            db.add(new_file)
             await db.commit()
-            await db.refresh(uploaded_file)
-            return uploaded_file
+            await db.refresh(new_file)
+            return new_file
         except SQLAlchemyError as e:
             await db.rollback()
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create uploaded file: {str(e)}")
 
-    async def get_uploaded_file_by_id(self, file_id: UUID, db: AsyncSession) -> UploadedFile:
+    @staticmethod
+    async def get_uploaded_file_by_id(file_id: UUID, db: AsyncSession) -> UploadedFile:
         try:
             result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
-            uploaded_file = result.scalar_one_or_none()
-            if not uploaded_file:
+            file = result.scalar_one_or_none()
+            if not file:
                 raise HTTPException(status_code=404, detail="Uploaded file not found")
-            return uploaded_file
+            return file
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve uploaded file: {str(e)}")
 
-    async def list_uploaded_files(self, session_id: UUID, db: AsyncSession) -> List[UploadedFile]:
+    @staticmethod
+    async def list_uploaded_files(session_id: UUID, db: AsyncSession) -> List[UploadedFile]:
         try:
             result = await db.execute(select(UploadedFile).where(UploadedFile.session_id == session_id))
-            return result.scalars().all()
+            files = result.scalars().all()
+            return files
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to list uploaded files: {str(e)}")
 
-    async def delete_uploaded_file(self, file_id: UUID, db: AsyncSession) -> None:
+    @staticmethod
+    async def delete_uploaded_file(file_id: UUID, db: AsyncSession) -> None:
         try:
             result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
-            uploaded_file = result.scalar_one_or_none()
-            if not uploaded_file:
+            file = result.scalar_one_or_none()
+            if not file:
                 raise HTTPException(status_code=404, detail="Uploaded file not found")
-            await db.delete(uploaded_file)
+            await db.delete(file)
             await db.commit()
         except SQLAlchemyError as e:
             await db.rollback()
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete uploaded file: {str(e)}")
 
-    async def ingest_document_chunks(self, file_id: UUID, db: AsyncSession) -> List[DocumentChunk]:
+    @staticmethod
+    async def ingest_document_chunks(file_id: UUID, session_id: UUID, db: AsyncSession) -> None:
         try:
-            uploaded_file = await self.get_uploaded_file_by_id(file_id, db)
-            file_path = uploaded_file.file_path
+            # Retrieve the uploaded file
+            file = await CoreApplicationService.get_uploaded_file_by_id(file_id, db)
+            file_path = file.file_path
 
-            # Extract text from the file
-            extracted_text = extract_text_from_excel(file_path)
+            # Parse the file content
+            parsed_text = parse_excel(file_path)
 
             # Chunk the text
-            chunks = chunk_text(extracted_text, chunk_size=1000, overlap=200)
+            chunks = chunk_text(parsed_text, chunk_size=1000, overlap=200)
 
             # Embed the chunks
-            embeddings = embed_text(chunks)
+            embeddings = get_embedding(chunks)
 
-            # Store chunks in the database
-            document_chunks = []
+            # Store chunks and embeddings in the database
             for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                document_chunk = DocumentChunk(
-                    id=UUID(),
+                new_chunk = DocumentChunk(
                     file_id=file_id,
                     content=chunk,
                     embedding=embedding,
                     chunk_index=index,
-                    start_row=None,  # Assuming row info is not available for Excel
-                    end_row=None,    # Assuming row info is not available for Excel
-                    metadata={},
-                    created_at=datetime.utcnow(),
+                    metadata={"session_id": str(session_id)},
                 )
-                db.add(document_chunk)
-                document_chunks.append(document_chunk)
+                db.add(new_chunk)
 
             await db.commit()
-            return document_chunks
         except SQLAlchemyError as e:
             await db.rollback()
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to ingest document chunks: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error during document ingestion: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error during ingestion: {str(e)}")
 
-    async def query_documents(self, query: str, top_k: int, db: AsyncSession) -> List[DocumentChunk]:
+    @staticmethod
+    async def query_documents(query: str, top_k: int, session_id: UUID, db: AsyncSession) -> List[DocumentChunk]:
         try:
             # Embed the query
             query_embedding = get_embedding([query])[0]
 
-            # Perform similarity search
+            # Perform vector search
             vector_store = VectorStore()
-            top_chunks = vector_store.search(query_embedding, top_k)
+            results = vector_store.search(query_embedding, top_k=top_k)
 
-            if not top_chunks:
-                raise HTTPException(status_code=404, detail="No relevant documents found")
+            # Retrieve document chunks from the database
+            chunk_ids = [result["id"] for result in results]
+            result = await db.execute(select(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids)))
+            chunks = result.scalars().all()
 
-            return top_chunks
+            return chunks
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to query documents: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error during document query: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error during query: {str(e)}")
