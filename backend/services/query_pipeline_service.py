@@ -1,148 +1,150 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import SQLAlchemyError
-from database.models import DocumentChunk, UploadedFile
-from backend.routers.query_pipeline import embed_query, retrieve_chunks, build_prompt, call_llm
-
+from database.models import DocumentChunk, Message, UploadedFile
+from ai.embeddings import get_embedding
+from ai.vector_store import VectorStore
+from ai.rag import retrieve_context, answer_question
+from env import GEMINI_API_KEY
+import os
 
 class QueryPipelineService:
+    def __init__(self, vector_store: VectorStore):
+        self.vector_store = vector_store
+
     async def embed_query(self, query: str) -> List[float]:
-        """
-        Embed the user query into a vector representation.
-        """
         try:
-            embedding = embed_query(query)
-            return embedding
+            embedding = get_embedding([query])
+            return embedding[0]
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to embed query: {str(e)}")
 
-    async def retrieve_top_chunks(self, query_embedding: List[float], top_k: int, db: AsyncSession) -> List[DocumentChunk]:
-        """
-        Retrieve the top-k chunks based on cosine similarity.
-        """
+    async def retrieve_top_chunks(self, query_embedding: List[float], top_k: int, session_id: UUID, db: AsyncSession) -> List[Dict]:
         try:
-            chunks = retrieve_chunks(query_embedding, top_k, db)
+            chunks = await self.vector_store.search(query_embedding, top_k)
             if not chunks:
                 raise HTTPException(status_code=404, detail="No relevant chunks found.")
-            return chunks
-        except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while retrieving chunks: {str(e)}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to retrieve chunks: {str(e)}")
+            
+            # Fetch metadata for chunks
+            chunk_ids = [chunk['id'] for chunk in chunks]
+            stmt = select(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids))
+            result = await db.execute(stmt)
+            document_chunks = result.scalars().all()
 
-    async def generate_answer(self, query: str, chunks: List[DocumentChunk]) -> Dict[str, str]:
-        """
-        Generate an answer using the retrieved chunks and the user's query.
-        """
+            return [
+                {
+                    "content": chunk.content,
+                    "metadata": chunk.metadata,
+                    "file_id": chunk.file_id,
+                    "start_row": chunk.start_row,
+                    "end_row": chunk.end_row
+                }
+                for chunk in document_chunks
+            ]
+        except SQLAlchemyError as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve top chunks: {str(e)}")
+
+    async def generate_answer(self, query: str, context: List[Dict], session_id: UUID, user_id: UUID) -> Dict:
         try:
-            context = build_prompt(chunks, query)
-            messages = [{"role": "system", "content": context}, {"role": "user", "content": query}]
-            response = call_llm(messages, stream=False)
-            return response
+            if not GEMINI_API_KEY:
+                raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured.")
+
+            # Prepare context for the LLM
+            prompt_context = retrieve_context(query, context, session_id, user_id)
+            answer = answer_question(query, session_id, user_id)
+
+            # Extract citations
+            citations = [
+                {
+                    "filename": chunk["metadata"]["filename"],
+                    "start_row": chunk["start_row"],
+                    "end_row": chunk["end_row"]
+                }
+                for chunk in context
+            ]
+
+            return {
+                "answer": answer["content"],
+                "citations": citations
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
 
-    async def query_pipeline(self, query: str, top_k: int, db: AsyncSession) -> Dict[str, Dict]:
-        """
-        Execute the full query pipeline: embed query, retrieve chunks, and generate answer.
-        """
+    async def create_message(self, session_id: UUID, role: str, content: str, citations: Optional[Dict], db: AsyncSession) -> Message:
         try:
-            # Step 1: Embed the query
-            query_embedding = await self.embed_query(query)
-
-            # Step 2: Retrieve top-k chunks
-            chunks = await self.retrieve_top_chunks(query_embedding, top_k, db)
-
-            # Step 3: Generate answer
-            answer = await self.generate_answer(query, chunks)
-
-            # Step 4: Prepare citations
-            citations = [
-                {
-                    "filename": chunk.metadata.get("filename"),
-                    "row_range": f"{chunk.start_row}-{chunk.end_row}"
-                }
-                for chunk in chunks
-            ]
-
-            return {"answer": answer, "citations": citations}
-        except HTTPException as e:
-            raise e
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to execute query pipeline: {str(e)}")
-
-    async def create_document_chunk(self, chunk_data: Dict, db: AsyncSession) -> DocumentChunk:
-        """
-        Create a new document chunk in the database.
-        """
-        try:
-            new_chunk = DocumentChunk(**chunk_data)
-            db.add(new_chunk)
+            message = Message(
+                session_id=session_id,
+                role=role,
+                content=content,
+                citations=citations
+            )
+            db.add(message)
             await db.commit()
-            await db.refresh(new_chunk)
-            return new_chunk
+            await db.refresh(message)
+            return message
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while creating document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create message: {str(e)}")
 
-    async def get_document_chunk_by_id(self, chunk_id: UUID, db: AsyncSession) -> DocumentChunk:
-        """
-        Retrieve a document chunk by its ID.
-        """
+    async def get_message_by_id(self, message_id: UUID, db: AsyncSession) -> Message:
         try:
-            result = await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
-            chunk = result.scalar_one_or_none()
-            if not chunk:
-                raise HTTPException(status_code=404, detail="Document chunk not found.")
-            return chunk
+            stmt = select(Message).where(Message.id == message_id)
+            result = await db.execute(stmt)
+            message = result.scalar_one_or_none()
+            if not message:
+                raise HTTPException(status_code=404, detail="Message not found.")
+            return message
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while retrieving document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to retrieve document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve message: {str(e)}")
 
-    async def list_all_document_chunks(self, db: AsyncSession) -> List[DocumentChunk]:
-        """
-        List all document chunks in the database.
-        """
+    async def list_all_messages(self, session_id: UUID, db: AsyncSession) -> List[Message]:
         try:
-            result = await db.execute(select(DocumentChunk))
-            chunks = result.scalars().all()
-            return chunks
+            stmt = select(Message).where(Message.session_id == session_id)
+            result = await db.execute(stmt)
+            messages = result.scalars().all()
+            return messages
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while listing document chunks: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to list document chunks: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to list messages: {str(e)}")
 
-    async def update_document_chunk(self, chunk_id: UUID, updated_data: Dict, db: AsyncSession) -> DocumentChunk:
-        """
-        Update an existing document chunk.
-        """
+    async def update_message(self, message_id: UUID, content: str, db: AsyncSession) -> Message:
         try:
-            chunk = await self.get_document_chunk_by_id(chunk_id, db)
-            for key, value in updated_data.items():
-                setattr(chunk, key, value)
-            db.add(chunk)
+            stmt = select(Message).where(Message.id == message_id)
+            result = await db.execute(stmt)
+            message = result.scalar_one_or_none()
+            if not message:
+                raise HTTPException(status_code=404, detail="Message not found.")
+
+            message.content = content
+            db.add(message)
             await db.commit()
-            await db.refresh(chunk)
-            return chunk
+            await db.refresh(message)
+            return message
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while updating document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to update message: {str(e)}")
 
-    async def delete_document_chunk(self, chunk_id: UUID, db: AsyncSession) -> None:
-        """
-        Delete a document chunk by its ID.
-        """
+    async def delete_message(self, message_id: UUID, db: AsyncSession) -> None:
         try:
-            chunk = await self.get_document_chunk_by_id(chunk_id, db)
-            await db.delete(chunk)
+            stmt = select(Message).where(Message.id == message_id)
+            result = await db.execute(stmt)
+            message = result.scalar_one_or_none()
+            if not message:
+                raise HTTPException(status_code=404, detail="Message not found.")
+
+            await db.delete(message)
             await db.commit()
         except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Database error while deleting document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to delete document chunk: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete message: {str(e)}")
