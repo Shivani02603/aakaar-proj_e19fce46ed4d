@@ -1,9 +1,8 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
 
-# Read DATABASE_URL from environment variables
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set.")
@@ -13,17 +12,16 @@ engine = create_engine(
     DATABASE_URL,
     pool_size=5,
     max_overflow=10,
-    pool_pre_ping=True
+    pool_pre_ping=True,
 )
 
 # SessionLocal factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 # Base class for models
-class Base(DeclarativeBase):
-    pass
+Base = declarative_base()
 
-# Dependency for FastAPI to get a database session
+# Dependency for FastAPI
 def get_db():
     db = SessionLocal()
     try:
@@ -31,12 +29,12 @@ def get_db():
     finally:
         db.close()
 
-# Function to initialize the database (create all tables)
+# Initialize database tables
 def init_db():
     from database.models import Base  # Ensure all models are imported
     Base.metadata.create_all(bind=engine)
 
-# Health check function to test the database connection
+# Health check function
 def check_db_health():
     try:
         with engine.connect() as connection:
