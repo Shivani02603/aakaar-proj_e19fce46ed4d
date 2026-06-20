@@ -56,14 +56,14 @@ jobs:
 
       - name: Build and push backend image
         run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \
+          docker buildx build --platform linux/amd64 \
             -t ghcr.io/${{ github.repository }}/backend:latest \
             -f Dockerfile.backend \
             --push .
 
       - name: Build and push frontend image
         run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \
+          docker buildx build --platform linux/amd64 \
             -t ghcr.io/${{ github.repository }}/frontend:latest \
             -f Dockerfile.frontend \
             --push .
