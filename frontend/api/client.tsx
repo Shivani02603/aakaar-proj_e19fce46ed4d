@@ -37,12 +37,12 @@ export interface LoginResponse {
 }
 
 export interface SessionCreateRequest {
-  title: string;
+  name: string;
 }
 
 export interface SessionResponse {
   id: string;
-  title: string;
+  name: string;
   createdAt: string;
 }
 
@@ -53,25 +53,25 @@ export interface MessageCreateRequest {
 
 export interface MessageResponse {
   id: string;
-  role: 'user' | 'assistant';
+  sessionId: string;
   content: string;
   createdAt: string;
 }
 
 export interface FileUploadResponse {
   id: string;
-  source: string;
-  createdAt: string;
+  name: string;
+  uploadedAt: string;
 }
 
 export interface QueryRequest {
-  query: string;
   sessionId: string;
+  query: string;
 }
 
 export interface QueryResponse {
   answer: string;
-  citations: Array<{ source: string; snippet: string }>;
+  citations: Array<{ source: string; excerpt: string }>;
 }
 
 // API client functions
@@ -84,9 +84,16 @@ export const getSession = (sessionId: string) => api.get<SessionResponse>(`/api/
 export const getSessionMessages = (sessionId: string) =>
   api.get<MessageResponse[]>(`/api/sessions/${sessionId}/messages`);
 
-export const uploadFile = (formData: FormData) => api.post<FileUploadResponse>('/api/upload', formData);
+export const createMessage = (data: MessageCreateRequest) =>
+  api.post<MessageResponse>(`/api/sessions/${data.sessionId}/messages`, { content: data.content });
 
-export const ingestDocuments = (data: { fileId: string; sessionId: string }) =>
-  api.post('/api/ai/ingest', data);
+export const uploadFile = (file: File) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return api.post<FileUploadResponse>('/api/upload', formData);
+};
+
+export const ingestDocuments = (fileId: string, sessionId: string) =>
+  api.post('/api/ai/ingest', { fileId, sessionId });
 
 export const aiQuery = (data: QueryRequest) => api.post<QueryResponse>('/api/ai/query', data);
