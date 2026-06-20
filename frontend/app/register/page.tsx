@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const RegisterPage = () => {
+export default function RegisterPage() {
   const [name, setName] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
@@ -12,7 +12,7 @@ const RegisterPage = () => {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
@@ -39,7 +39,7 @@ const RegisterPage = () => {
 
       router.push('/login');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An unknown error occurred');
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -52,7 +52,9 @@ const RegisterPage = () => {
         className="bg-white p-6 rounded shadow-md w-full max-w-md"
       >
         <h1 className="text-2xl font-bold mb-4">Register</h1>
-        {error && <p className="text-red-500 mb-4">{error}</p>}
+        {error && (
+          <div className="text-red-500 text-sm mb-4">{error}</div>
+        )}
         <div className="mb-4">
           <label htmlFor="name" className="block text-sm font-medium text-gray-700">
             Name
@@ -107,9 +109,7 @@ const RegisterPage = () => {
         </div>
         <button
           type="submit"
-          className={`w-full px-4 py-2 text-white bg-indigo-600 rounded shadow-sm ${
-            loading ? 'opacity-50 cursor-not-allowed' : ''
-          }`}
+          className="w-full bg-indigo-600 text-white py-2 px-4 rounded hover:bg-indigo-700 focus:outline-none focus:ring focus:ring-indigo-500"
           disabled={loading}
         >
           {loading ? 'Registering...' : 'Register'}
@@ -117,6 +117,4 @@ const RegisterPage = () => {
       </form>
     </div>
   );
-};
-
-export default RegisterPage;
+}
