@@ -3,105 +3,74 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
-import { createUpload } from '@/lib/api';
-
-interface UploadForm {
-  fileName: string;
-  fileType: string;
-  fileSize: number;
-}
 
 export default function NewUploadPage() {
-  const [form, setForm] = useState<UploadForm>({
-    fileName: '',
-    fileType: '',
-    fileSize: 0,
-  });
+  const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const router = useRouter();
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setForm((prev) => ({
-      ...prev,
-      [name]: name === 'fileSize' ? Number(value) : value,
-    }));
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] || null;
+    setFile(selectedFile);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.fileName || !form.fileType || form.fileSize <= 0) {
-      toast.error('Please fill out all fields correctly.');
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!file) {
+      toast.error('Please select a file to upload.');
       return;
     }
 
+    const formData = new FormData();
+    formData.append('file', file);
+
     try {
       setLoading(true);
-      await createUpload(form);
-      toast.success('Upload created successfully.');
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to upload file.');
+      }
+
+      toast.success('File uploaded successfully.');
       router.push('/upload');
     } catch (err) {
-      toast.error('Failed to create upload.');
+      toast.error(err instanceof Error ? err.message : 'An unknown error occurred.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="container mx-auto px-4 py-6">
-      <h1 className="text-2xl font-bold mb-4">New Upload</h1>
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <div className="container mx-auto py-10">
+      <h1 className="text-2xl font-bold mb-6">Upload New File</h1>
+      <form onSubmit={handleSubmit} className="space-y-6">
         <div>
-          <label htmlFor="fileName" className="block text-sm font-medium text-gray-700">
-            File Name
+          <label htmlFor="file" className="block text-sm font-medium text-gray-700">
+            File
           </label>
           <input
-            type="text"
-            id="fileName"
-            name="fileName"
-            value={form.fileName}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm px-3 py-2"
-            required
+            type="file"
+            id="file"
+            name="file"
+            accept=".pdf,.docx,.txt"
+            onChange={handleFileChange}
+            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
           />
         </div>
-        <div>
-          <label htmlFor="fileType" className="block text-sm font-medium text-gray-700">
-            File Type
-          </label>
-          <input
-            type="text"
-            id="fileType"
-            name="fileType"
-            value={form.fileType}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm px-3 py-2"
-            required
-          />
-        </div>
-        <div>
-          <label htmlFor="fileSize" className="block text-sm font-medium text-gray-700">
-            File Size (KB)
-          </label>
-          <input
-            type="number"
-            id="fileSize"
-            name="fileSize"
-            value={form.fileSize}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm px-3 py-2"
-            required
-          />
-        </div>
-        <div>
-          <button
-            type="submit"
-            className={`bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-            disabled={loading}
-          >
-            {loading ? 'Submitting...' : 'Submit'}
-          </button>
-        </div>
+        <button
+          type="submit"
+          className={`bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 ${
+            loading ? 'opacity-50 cursor-not-allowed' : ''
+          }`}
+          disabled={loading}
+        >
+          {loading ? 'Uploading...' : 'Upload'}
+        </button>
       </form>
     </div>
   );
