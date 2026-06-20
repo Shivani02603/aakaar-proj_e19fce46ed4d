@@ -1,25 +1,28 @@
-export const getToken = (): string | null => {
+export function getToken(): string | null {
   return localStorage.getItem('token');
-};
+}
 
-export const setToken = (token: string): void => {
+export function setToken(token: string): void {
   localStorage.setItem('token', token);
-};
+}
 
-export const removeToken = (): void => {
+export function removeToken(): void {
   localStorage.removeItem('token');
-};
+}
 
-export const isAuthenticated = (): boolean => {
+export function isAuthenticated(): boolean {
   return !!getToken();
-};
+}
 
-export const getUser = (): Record<string, unknown> | null => {
+export function getUser(): Record<string, unknown> | null {
   const token = getToken();
-  return token ? parseJwt(token) : null;
-};
+  if (!token) return null;
 
-export const parseJwt = (token: string): Record<string, unknown> => {
+  const payload = parseJwt(token);
+  return payload || null;
+}
+
+export function parseJwt(token: string): Record<string, unknown> | null {
   try {
     const base64Url = token.split('.')[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
@@ -30,7 +33,7 @@ export const parseJwt = (token: string): Record<string, unknown> => {
         .join('')
     );
     return JSON.parse(jsonPayload);
-  } catch (error) {
-    return {};
+  } catch (err) {
+    return null;
   }
-};
+}
