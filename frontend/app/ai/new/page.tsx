@@ -3,14 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
+import { getToken } from '@/lib/auth';
 
 interface AiFormData {
-  name: string;
-  description: string;
+  query: string;
 }
 
 export default function AiNewPage() {
-  const [formData, setFormData] = useState<AiFormData>({ name: '', description: '' });
+  const [formData, setFormData] = useState<AiFormData>({ query: '' });
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
@@ -22,26 +22,25 @@ export default function AiNewPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.description) {
-      toast.error('All fields are required.');
-      return;
-    }
+    setLoading(true);
+    setError(null);
 
     try {
-      setLoading(true);
-      const response = await fetch('/api/ai', {
+      const token = getToken();
+      const response = await fetch('/api/ai/query', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(formData),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create AI item.');
+        throw new Error('Failed to create AI query.');
       }
 
-      toast.success('AI item created successfully.');
+      toast.success('AI query created successfully.');
       router.push('/ai');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred.');
@@ -51,48 +50,31 @@ export default function AiNewPage() {
   };
 
   return (
-    <div className="p-4">
-      <h1 className="text-2xl font-bold mb-4">Create New AI Item</h1>
-      {error && <div className="text-red-500 mb-4">{error}</div>}
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label htmlFor="name" className="block text-sm font-medium text-gray-700">
-            Name
-          </label>
-          <input
-            type="text"
-            id="name"
-            name="name"
-            value={formData.name}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-            required
-          />
-        </div>
-        <div>
-          <label htmlFor="description" className="block text-sm font-medium text-gray-700">
-            Description
+    <div className="container mx-auto py-8">
+      <h1 className="text-2xl font-bold mb-4">Create New AI Query</h1>
+      <form onSubmit={handleSubmit} className="max-w-lg mx-auto">
+        <div className="mb-4">
+          <label htmlFor="query" className="block text-sm font-medium text-gray-700">
+            Query
           </label>
           <textarea
-            id="description"
-            name="description"
-            value={formData.description}
+            id="query"
+            name="query"
+            value={formData.query}
             onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            rows={4}
             required
           />
         </div>
-        <div>
-          <button
-            type="submit"
-            className={`bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 ${
-              loading ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-            disabled={loading}
-          >
-            {loading ? 'Submitting...' : 'Submit'}
-          </button>
-        </div>
+        {error && <div className="text-red-500 mb-4">{error}</div>}
+        <button
+          type="submit"
+          className={`bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          disabled={loading}
+        >
+          {loading ? 'Submitting...' : 'Submit'}
+        </button>
       </form>
     </div>
   );
