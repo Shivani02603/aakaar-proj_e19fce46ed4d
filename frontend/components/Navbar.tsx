@@ -1,41 +1,48 @@
 'use client';
 
-import Link from 'next/link';
 import { useAuth } from '../providers/AuthProvider';
+import { removeToken } from '../lib/auth';
+import { useRouter } from 'next/navigation';
 
 export default function Navbar() {
-  const { user, logout } = useAuth();
+  const { user, setUser } = useAuth();
+  const router = useRouter();
+
+  const handleLogout = () => {
+    removeToken();
+    setUser(null);
+    router.push('/login');
+  };
 
   return (
-    <nav className="bg-white shadow-md">
-      <div className="container mx-auto px-4 py-2 flex justify-between items-center">
-        <Link href="/dashboard" className="text-lg font-bold text-blue-600">
-          Aakaar Project
-        </Link>
+    <nav className="bg-blue-600 text-white p-4">
+      <div className="container mx-auto flex justify-between items-center">
+        <div className="text-lg font-bold">Aakaar Project</div>
         <div className="flex items-center space-x-4">
           {user ? (
             <>
-              <Link href="/sessions" className="text-gray-700 hover:text-blue-600">
-                Sessions
-              </Link>
-              <Link href="/upload" className="text-gray-700 hover:text-blue-600">
-                Upload
-              </Link>
+              <span>Welcome, {user.name}</span>
               <button
-                onClick={logout}
-                className="text-red-600 hover:text-red-800"
+                onClick={handleLogout}
+                className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded"
               >
                 Logout
               </button>
             </>
           ) : (
             <>
-              <Link href="/login" className="text-gray-700 hover:text-blue-600">
+              <button
+                onClick={() => router.push('/login')}
+                className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+              >
                 Login
-              </Link>
-              <Link href="/register" className="text-gray-700 hover:text-blue-600">
+              </button>
+              <button
+                onClick={() => router.push('/register')}
+                className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
+              >
                 Register
-              </Link>
+              </button>
             </>
           )}
         </div>
