@@ -1,16 +1,17 @@
 install:
 	pip install -r backend/requirements.txt
-	cd frontend && npm install
+	npm install --prefix frontend
 
 dev:
 	./scripts/dev.sh
 
 build:
-	docker-compose build
+	docker build -t rag-backend -f Dockerfile.backend .
+	docker build -t rag-frontend -f Dockerfile.frontend .
 
 test:
 	pytest backend/tests
-	cd frontend && npm test
+	npm test --prefix frontend
 
 docker-up:
 	docker-compose up -d
@@ -19,5 +20,5 @@ docker-down:
 	docker-compose down
 
 clean:
-	docker-compose down -v
-	rm -rf backend/__pycache__ frontend/node_modules
+	docker-compose down --volumes --remove-orphans
+	rm -rf backend/__pycache__ frontend/.next
